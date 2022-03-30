@@ -24,7 +24,7 @@ function getAllPostsFrom($email)
 
     $email_exists = (!is_null($email) || !empty($email));
 
-    $sql = 'SELECT p.commentaire AS comm, NICKNAME AS nickname, m.dataMedia AS dataMedia, AVATAR AS avatar, p.creationDate AS dateCrea';
+    $sql = 'SELECT p.commentaire AS comm, c.Post_idPost AS idPost, NICKNAME AS nickname, m.dataMedia AS dataMedia, AVATAR AS avatar, p.creationDate AS dateCrea, COUNT(idPost) AS nbMedia';
     $sql .= ' FROM Post AS p';
     $sql .= ' JOIN USERS u ON u.EMAIL = p.USERS_EMAIL';
     $sql .= ' JOIN contenir c ON c.Post_idPost = p.idPost';
@@ -32,7 +32,8 @@ function getAllPostsFrom($email)
 
     if ($email_exists)
         $sql .= ' WHERE u.NICKNAME = :USERNAME';
-    $sql .= ' ORDER BY p.creationDate DESC';
+    $sql .= ' GROUP BY p.idPost';
+    $sql .= ' ORDER BY c.Post_idPost DESC';
 
 
     if ($ps == null)
@@ -46,6 +47,95 @@ function getAllPostsFrom($email)
         if ($email_exists) {
             $ps->bindParam(':USERNAME', $email, PDO::PARAM_STR);
         }
+
+        if ($ps->execute())
+            $answer = $ps->fetchAll(PDO::FETCH_ASSOC);
+        
+        for ($i = 0; $i < sizeof($answer); $i++)
+        {
+            if ($answer[$i]['nbMedia'] > 1)
+            {
+                $answer[$i]['dataMedia'] = getAllMediasFromPost($answer[$i]['idPost']);
+            }
+        }
+    }
+    catch (PDOException $e)
+    {
+        echo $e->getMessage();
+    }
+
+    return $answer;
+}
+
+/**
+ * Retourne un post avec un id donné
+ *
+ * @param int $idPost
+ * @return bool true si réussi
+ */
+function getPost($idPost)
+{
+    static $ps = null;
+
+    $sql = 'SELECT p.commentaire AS comm, c.Post_idPost AS idPost, NICKNAME AS nickname, m.dataMedia AS dataMedia, AVATAR AS avatar, p.creationDate AS dateCrea, COUNT(idPost) AS nbMedia';
+    $sql .= ' FROM Post AS p';
+    $sql .= ' JOIN USERS u ON u.EMAIL = p.USERS_EMAIL';
+    $sql .= ' JOIN contenir c ON c.Post_idPost = p.idPost';
+    $sql .= ' JOIN Media m ON m.idMedia = c.Media_idMedia';
+
+    $sql .= ' WHERE p.idPost = :IDPOST';
+    $sql .= ' ORDER BY c.Post_idPost DESC';
+
+
+    if ($ps == null)
+    {
+        $ps = connectDB()->prepare($sql);
+    }
+    $answer = false;
+    
+    try
+    {
+        $ps->bindParam(':IDPOST', $idPost, PDO::PARAM_INT);
+
+        if ($ps->execute())
+            $answer = $ps->fetchAll(PDO::FETCH_ASSOC);
+        
+        $answer['dataMedia'] = getAllMediasFromPost($answer['idPost']);
+    }
+    catch (PDOException $e)
+    {
+        echo $e->getMessage();
+    }
+
+    return $answer;
+}
+
+/**
+ * Retourne tous les médias associés à un post
+ *
+ * @param int $idPost
+ * @return array Médias de l'utilisateur
+ */
+function getAllMediasFromPost($idPost)
+{
+    static $ps = null;
+
+    $sql = 'SELECT m.dataMedia AS dataMedia, idMedia';
+    $sql .= ' FROM Post AS p';
+    $sql .= ' JOIN USERS u ON u.EMAIL = p.USERS_EMAIL';
+    $sql .= ' JOIN contenir c ON c.Post_idPost = p.idPost';
+    $sql .= ' JOIN Media m ON m.idMedia = c.Media_idMedia';
+    $sql .= ' WHERE p.idPost = :IDPOST';
+
+    if ($ps == null)
+    {
+        $ps = connectDB()->prepare($sql);
+    }
+    $answer = false;
+    
+    try
+    {
+        $ps->bindParam(':IDPOST', $idPost, PDO::PARAM_INT);
 
         if ($ps->execute())
             $answer = $ps->fetchAll(PDO::FETCH_ASSOC);
@@ -153,7 +243,13 @@ function addMedia($b64Img, $postID)
     return $answer;
 }
 
-
+/**
+ * Ajoute une ligne à la table contenir
+ *
+ * @param int $postID
+ * @param int $mediaID
+ * @return bool true si réussi
+ */
 function addContenir($postID, $mediaID)
 {
     static $ps = null;
@@ -170,6 +266,96 @@ function addContenir($postID, $mediaID)
     {
         $ps->bindParam(':IDPOST', $postID, PDO::PARAM_INT);
         $ps->bindParam(':IDMEDIA', $mediaID, PDO::PARAM_INT);
+
+        $answer = $ps->execute();
+    }
+    catch (PDOException $e)
+    {
+        echo $e->getMessage();
+        return false;
+    }
+
+    return $answer;
+}
+
+/**
+ * Supprime un post ainsi que ses médias
+ *
+ * @param int $idPost
+ * @return bool true si réussi
+ */
+function deletePostAndMedia($idPost)
+{
+    static $ps = null;
+    
+    $medias = getAllMediasFromPost($idPost);
+
+    $sql = 'DELETE FROM Post';
+    $sql .= ' WHERE idPost = :IDPOST';
+
+    if ($ps == null)
+    {
+        $ps = connectDB()->prepare($sql);
+    }
+    $answer = false;
+
+    try
+    {
+        $ps->bindParam(':IDPOST', $idPost, PDO::PARAM_INT);
+
+        connectDB()->beginTransaction();
+
+        //if (!$ps->execute()) {
+        if (!$ps->execute()) {
+            connectDB()->rollBack();
+            return false;
+        }
+        else 
+        {
+            for ($i = 0; $i < sizeof($medias); $i++) 
+            {
+                if (!deleteMedia($medias[$i]['idMedia']))
+                {
+                    connectDB()->rollBack();
+                    return false;
+                }
+            }
+
+            connectDB()->commit();
+        }
+    }
+    catch (PDOException $e)
+    {
+        echo $e->getMessage();
+        return false;
+    }
+
+    return $answer;
+}
+
+/**
+ * Supprime un média
+ *
+ * @param int $idMedia
+ * @return bool true si réussi
+ */
+function deleteMedia($idMedia) {
+    static $ps = null;
+    
+    $medias = getAllMediasFromPost($idMedia);
+
+    $sql = 'DELETE FROM Media';
+    $sql .= ' WHERE idMedia = :IDMEDIA';
+
+    if ($ps == null)
+    {
+        $ps = connectDB()->prepare($sql);
+    }
+    $answer = false;
+
+    try
+    {
+        $ps->bindParam(':IDMEDIA', $idMedia, PDO::PARAM_INT);
 
         $answer = $ps->execute();
     }
